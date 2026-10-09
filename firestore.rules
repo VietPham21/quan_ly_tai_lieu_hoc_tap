@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Chỉ cho phép sinh viên đã đăng nhập qua Firebase Auth thao tác với tài liệu của chính họ
+    match /users/{userId}/documents/{documentId} {
+      // Chỉ đọc/xóa khi đúng UID
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      
+      // Tạo mới tài liệu: bắt buộc đúng UID, tiêu đề từ 2 đến 200 ký tự
+      allow create: if request.auth != null && request.auth.uid == userId
+                    && request.resource.data.ownerUid == userId
+                    && request.resource.data.title is string
+                    && request.resource.data.title.size() >= 2
+                    && request.resource.data.title.size() <= 200;
+                    
+      // Cập nhật tài liệu: không được phép sửa ownerUid để chiếm quyền tài liệu
+      allow update: if request.auth != null && request.auth.uid == userId
+                    && request.resource.data.ownerUid == userId;
+    }
+  }
+}

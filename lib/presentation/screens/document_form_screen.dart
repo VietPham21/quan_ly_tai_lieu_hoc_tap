@@ -1,13 +1,17 @@
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_constants.dart';
-import '../../data/database/app_database.dart';
+import '../../core/utils/file_helper.dart';
+import '../../data/models/cloud_document.dart';
 import '../../logic/controllers/document_controller.dart';
 
 class DocumentFormScreen extends StatefulWidget {
-  final Document? document;
+  final CloudDocument? document;
 
   const DocumentFormScreen({super.key, this.document});
 
@@ -32,6 +36,11 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   late bool _isFavorite;
   bool _isSubmitting = false;
 
+  // Dữ liệu nhị phân của tệp thật khi được chọn qua FilePicker
+  Uint8List? _selectedFileBytes;
+  String? _pickedFileName;
+  int? _pickedFileSize;
+
   @override
   void initState() {
     super.initState();
@@ -52,13 +61,12 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
     _fileSizeKbController = TextEditingController(
       text: doc != null && doc.fileSize > 0
           ? (doc.fileSize / 1024).round().toString()
-          : '1024',
+          : '0',
     );
 
     _selectedFileType = doc?.fileType ?? 'PDF';
     _isFavorite = doc?.isFavorite ?? false;
 
-    // Tự động gợi ý tên file khi nhập title nếu đang thêm mới
     if (!widget.isEditMode) {
       _titleController.addListener(_autoSuggestFileName);
     }
@@ -66,6 +74,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
 
   void _autoSuggestFileName() {
     if (!widget.isEditMode &&
+        _selectedFileBytes == null &&
         _fileNameController.text.isEmpty &&
         _titleController.text.isNotEmpty) {
       final sanitized = _titleController.text
@@ -76,6 +85,88 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       if (sanitized.isNotEmpty) {
         _fileNameController.text =
             '$sanitized.${_selectedFileType.toLowerCase()}';
+      }
+    }
+  }
+
+  /// Chọn tệp tin thực tế từ thiết bị thông qua FilePicker
+  Future<void> _pickFileFromDevice() async {
+    try {
+      final files = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: [
+          'pdf',
+          'doc',
+          'docx',
+          'ppt',
+          'pptx',
+          'xls',
+          'xlsx',
+          'zip',
+          'txt',
+          'dart',
+          'py',
+        ],
+      );
+
+      if (files.isNotEmpty) {
+        final file = files.first;
+        final bytes = await file.readAsBytes();
+        final size = (await file.length()) ?? bytes.lengthInBytes;
+
+        // Giới hạn dung lượng tối đa 25MB
+        const maxBytes = 25 * 1024 * 1024;
+        if (size > maxBytes) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Tệp tin vượt quá dung lượng tối đa cho phép (25MB).',
+                ),
+                backgroundColor: AppColors.error,
+              ),
+            );
+          }
+          return;
+        }
+
+        setState(() {
+          _selectedFileBytes = bytes;
+          _pickedFileName = file.name;
+          _pickedFileSize = size;
+          _fileNameController.text = file.name;
+          _fileSizeKbController.text = (size / 1024).round().toString();
+
+          final ext = file.extension?.toUpperCase() ?? 'PDF';
+          if (AppConstants.supportedFileTypes.contains(ext)) {
+            _selectedFileType = ext;
+          } else if (['DOC', 'DOCX'].contains(ext)) {
+            _selectedFileType = 'DOCX';
+          } else if (['PPT', 'PPTX'].contains(ext)) {
+            _selectedFileType = 'PPTX';
+          } else if (['XLS', 'XLSX'].contains(ext)) {
+            _selectedFileType = 'XLSX';
+          } else {
+            _selectedFileType = 'TXT';
+          }
+
+          if (_titleController.text.isEmpty) {
+            // Tự điền tiêu đề từ tên file nếu chưa nhập
+            final nameWithoutExt = file.name.contains('.')
+                ? file.name.substring(0, file.name.lastIndexOf('.'))
+                : file.name;
+            _titleController.text = nameWithoutExt.replaceAll('_', ' ');
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lỗi khi chọn tệp: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
     }
   }
@@ -102,7 +193,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
 
     final controller = context.read<DocumentController>();
     final fileSizeKb = int.tryParse(_fileSizeKbController.text.trim()) ?? 0;
-    final fileSizeBytes = fileSizeKb * 1024;
+    final fileSizeBytes = _selectedFileBytes != null
+        ? _selectedFileBytes!.lengthInBytes
+        : fileSizeKb * 1024;
 
     bool success;
     if (widget.isEditMode) {
@@ -122,6 +215,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         fileSize: fileSizeBytes,
         isFavorite: _isFavorite,
         createdAt: widget.document!.createdAt,
+        oldStoragePath: widget.document!.storagePath,
+        existingFileUrl: widget.document!.fileUrl,
+        newFileBytes: _selectedFileBytes,
       );
     } else {
       success = await controller.createDocument(
@@ -138,6 +234,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         fileType: _selectedFileType,
         fileSize: fileSizeBytes,
         isFavorite: _isFavorite,
+        fileBytes: _selectedFileBytes,
       );
     }
 
@@ -150,7 +247,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
           content: Text(
             widget.isEditMode
                 ? 'Đã cập nhật tài liệu thành công!'
-                : 'Đã thêm tài liệu mới!',
+                : 'Đã thêm tài liệu mới lên Cloud!',
           ),
           backgroundColor: AppColors.success,
         ),
@@ -161,6 +258,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         SnackBar(
           content: Text(controller.errorMessage ?? 'Thao tác không thành công'),
           backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -169,6 +267,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<DocumentController>();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
@@ -182,7 +281,141 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            // Tiêu đề
+            // CHỌN TỆP TIN THỰC TẾ
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isDark ? AppColors.surfaceDark : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _selectedFileBytes != null
+                      ? AppColors.primary
+                      : Theme.of(context).dividerColor.withValues(alpha: 0.4),
+                  width: _selectedFileBytes != null ? 1.5 : 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.cloud_upload_rounded,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _selectedFileBytes != null
+                            ? 'TỆP ĐÃ CHỌN ĐỂ TẢI LÊN'
+                            : (widget.document?.storagePath != null
+                                  ? 'TỆP ĐÃ LƯU TRÊN CLOUD STORAGE'
+                                  : 'CHỌN TỆP TỪ THIẾT BỊ (TÙY CHỌN)'),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.1,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (_selectedFileBytes != null) ...[
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(
+                            FileHelper.getFileTypeIcon(_selectedFileType),
+                            color: FileHelper.getFileTypeColor(
+                              _selectedFileType,
+                            ),
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _pickedFileName ?? _fileNameController.text,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Dung lượng: ${FileHelper.formatFileSize(_pickedFileSize ?? 0)}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Hủy chọn tệp này',
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            color: AppColors.error,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _selectedFileBytes = null;
+                              _pickedFileName = null;
+                              _pickedFileSize = null;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ] else if (widget.document?.storagePath != null) ...[
+                    Text(
+                      'Tệp hiện tại: ${widget.document!.fileName} (${FileHelper.formatFileSize(widget.document!.fileSize)})',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    onPressed: _isSubmitting ? null : _pickFileFromDevice,
+                    icon: const Icon(Icons.attach_file_rounded),
+                    label: Text(
+                      _selectedFileBytes != null
+                          ? 'Chọn tệp khác thay thế'
+                          : (widget.isEditMode
+                                ? 'Thay thế tệp mới từ máy'
+                                : 'Chọn tệp từ máy tính / điện thoại'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // TIÊU ĐỀ
             const Text(
               'THÔNG TIN TÀI LIỆU',
               style: TextStyle(
@@ -270,7 +503,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
             ),
             const SizedBox(height: 24),
 
-            // TỆP ĐÍNH KÈM
+            // TỆP ĐÍNH KÈM & SIÊU DỮ LIỆU
             const Text(
               'TỆP ĐÍNH KÈM & SIÊU DỮ LIỆU',
               style: TextStyle(
@@ -349,21 +582,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Đường dẫn tệp / URI
-            TextFormField(
-              controller: _filePathController,
-              decoration: const InputDecoration(
-                labelText: 'Đường dẫn tệp cục bộ / URI (tùy chọn)',
-                hintText: 'VD: /storage/emulated/0/Documents/kien_truc.pdf',
-                prefixIcon: Icon(
-                  Icons.folder_open_rounded,
-                  color: AppColors.primary,
-                ),
-              ),
-              textInputAction: TextInputAction.done,
-            ),
-            const SizedBox(height: 16),
-
             // Đánh dấu yêu thích
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
@@ -373,7 +591,39 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
               activeThumbColor: AppColors.primary,
               onChanged: (val) => setState(() => _isFavorite = val),
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 20),
+
+            // Hiển thị thanh tiến trình Upload nếu đang tải
+            if (controller.uploadProgress != null) ...[
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Đang tải tệp lên Cloud Storage...',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        '${((controller.uploadProgress ?? 0) * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: controller.uploadProgress,
+                    minHeight: 6,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ],
 
             // Nút Lưu
             FilledButton.icon(
@@ -394,11 +644,13 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                         strokeWidth: 2,
                       ),
                     )
-                  : const Icon(Icons.save_rounded),
+                  : const Icon(Icons.cloud_upload_rounded),
               label: Text(
                 _isSubmitting
-                    ? 'Đang lưu...'
-                    : (widget.isEditMode ? 'LƯU THAY ĐỔI' : 'THÊM TÀI LIỆU'),
+                    ? 'Đang lưu lên Cloud...'
+                    : (widget.isEditMode
+                          ? 'LƯU THAY ĐỔI'
+                          : 'THÊM TÀI LIỆU LÊN CLOUD'),
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,

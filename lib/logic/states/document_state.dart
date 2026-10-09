@@ -1,16 +1,17 @@
-import '../../data/database/app_database.dart';
+import '../../data/models/cloud_document.dart';
 
 enum DocumentStatus { initial, loading, success, error }
 
 class DocumentState {
   final DocumentStatus status;
-  final List<Document> documents;
+  final List<CloudDocument> documents;
   final String searchQuery;
   final String? selectedCategory;
   final String? selectedSubject;
   final bool isAscending;
   final String? errorMessage;
   final String? successMessage;
+  final double? uploadProgress;
 
   const DocumentState({
     this.status = DocumentStatus.initial,
@@ -21,6 +22,7 @@ class DocumentState {
     this.isAscending = false,
     this.errorMessage,
     this.successMessage,
+    this.uploadProgress,
   });
 
   bool get isLoading => status == DocumentStatus.loading;
@@ -33,7 +35,7 @@ class DocumentState {
 
   DocumentState copyWith({
     DocumentStatus? status,
-    List<Document>? documents,
+    List<CloudDocument>? documents,
     String? searchQuery,
     String? selectedCategory,
     bool clearCategory = false,
@@ -44,6 +46,8 @@ class DocumentState {
     bool clearError = false,
     String? successMessage,
     bool clearSuccess = false,
+    double? uploadProgress,
+    bool clearUploadProgress = false,
   }) {
     return DocumentState(
       status: status ?? this.status,
@@ -60,6 +64,9 @@ class DocumentState {
       successMessage: clearSuccess
           ? null
           : (successMessage ?? this.successMessage),
+      uploadProgress: clearUploadProgress
+          ? null
+          : (uploadProgress ?? this.uploadProgress),
     );
   }
 }

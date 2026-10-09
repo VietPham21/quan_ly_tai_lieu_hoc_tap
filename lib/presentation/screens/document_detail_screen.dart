@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_colors.dart';
 import '../../core/utils/file_helper.dart';
@@ -15,12 +16,10 @@ class DocumentDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<DocumentController>();
-    // Lấy document mới nhất từ Reactive State của Controller
     final docList = controller.documents;
     final docIndex = docList.indexWhere((d) => d.id == documentId);
 
     if (docIndex == -1) {
-      // Tài liệu đã bị xóa khỏi CSDL, tự động pop nếu màn hình đang hiển thị
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (Navigator.of(context).canPop()) {
           Navigator.of(context).pop();
@@ -33,6 +32,7 @@ class DocumentDetailScreen extends StatelessWidget {
     final typeColor = FileHelper.getFileTypeColor(doc.fileType);
     final typeIcon = FileHelper.getFileTypeIcon(doc.fileType);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasCloudUrl = doc.fileUrl != null && doc.fileUrl!.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -72,10 +72,13 @@ class DocumentDetailScreen extends StatelessWidget {
                 context: context,
                 title: 'Xóa tài liệu',
                 message:
-                    'Bạn có chắc chắn muốn xóa "${doc.title}"? Hành động này không thể hoàn tác.',
+                    'Bạn có chắc chắn muốn xóa "${doc.title}"? Dữ liệu và file đính kèm trên Cloud sẽ bị xóa hoàn toàn.',
               );
               if (confirmed == true && context.mounted) {
-                final success = await controller.deleteDocument(doc.id);
+                final success = await controller.deleteDocument(
+                  doc.id,
+                  storagePath: doc.storagePath,
+                );
                 if (success && context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -193,7 +196,41 @@ class DocumentDetailScreen extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
+
+          // NÚT MỞ HOẶC TẢI FILE TỪ CLOUD STORAGE
+          if (hasCloudUrl) ...[
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.teal.shade700,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              icon: const Icon(Icons.open_in_browser_rounded),
+              label: const Text(
+                'MỞ / TẢI TỆP ĐÍNH KÈM (CLOUD STORAGE)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              onPressed: () async {
+                final uri = Uri.parse(doc.fileUrl!);
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                } else {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Không thể mở liên kết tệp tin.'),
+                        backgroundColor: AppColors.error,
+                      ),
+                    );
+                  }
+                }
+              },
+            ),
+            const SizedBox(height: 20),
+          ],
 
           // Mô tả / Ghi chú học tập
           if (doc.description != null && doc.description!.isNotEmpty) ...[
@@ -224,9 +261,9 @@ class DocumentDetailScreen extends StatelessWidget {
             const SizedBox(height: 24),
           ],
 
-          // Thông tin tệp tin & Hệ thống
+          // Thông tin tệp tin & Hệ thống Cloud
           const Text(
-            'THÔNG TIN TỆP & HỆ THỐNG',
+            'THÔNG TIN TỆP & HỆ THỐNG CLOUD',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
@@ -255,17 +292,28 @@ class DocumentDetailScreen extends StatelessWidget {
                 const Divider(height: 20),
                 _buildDetailRow(
                   context,
-                  'Đường dẫn tệp:',
-                  doc.filePath ?? 'Lưu trữ cục bộ ứng dụng',
-                  isCode: doc.filePath != null,
-                ),
-                const Divider(height: 20),
-                _buildDetailRow(
-                  context,
-                  'Mã định danh (UUID):',
+                  'Mã tài liệu (ID):',
                   doc.id,
                   isCode: true,
                 ),
+                if (doc.storagePath != null) ...[
+                  const Divider(height: 20),
+                  _buildDetailRow(
+                    context,
+                    'Cloud Storage Path:',
+                    doc.storagePath!,
+                    isCode: true,
+                  ),
+                ],
+                if (doc.ownerUid.isNotEmpty) ...[
+                  const Divider(height: 20),
+                  _buildDetailRow(
+                    context,
+                    'Owner UID:',
+                    doc.ownerUid,
+                    isCode: true,
+                  ),
+                ],
                 const Divider(height: 20),
                 _buildDetailRow(
                   context,

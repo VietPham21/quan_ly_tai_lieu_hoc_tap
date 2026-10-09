@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants/app_colors.dart';
 import '../../core/utils/file_helper.dart';
-import '../../data/database/app_database.dart';
+import '../../data/models/cloud_document.dart';
 
 class DocumentCard extends StatelessWidget {
-  final Document document;
+  final CloudDocument document;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
@@ -25,6 +25,8 @@ class DocumentCard extends StatelessWidget {
     final typeColor = FileHelper.getFileTypeColor(document.fileType);
     final typeIcon = FileHelper.getFileTypeIcon(document.fileType);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasCloudFile =
+        document.storagePath != null || document.fileUrl != null;
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -69,15 +71,29 @@ class DocumentCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          document.fileName,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.onSurface
-                                .withValues(alpha: 0.6),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        Row(
+                          children: [
+                            if (hasCloudFile) ...[
+                              const Icon(
+                                Icons.cloud_done_rounded,
+                                size: 14,
+                                color: AppColors.primary,
+                              ),
+                              const SizedBox(width: 4),
+                            ],
+                            Expanded(
+                              child: Text(
+                                document.fileName,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.6),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -116,7 +132,7 @@ class DocumentCard extends StatelessWidget {
               ],
 
               const SizedBox(height: 12),
-              // Hàng 2: Badges môn học, danh mục, dung lượng
+              // Hàng 2: Badges môn học, danh mục, dung lượng, trạng thái Cloud
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
@@ -151,6 +167,14 @@ class DocumentCard extends StatelessWidget {
                           .withValues(alpha: 0.05),
                       textColor: Theme.of(context).colorScheme.onSurface
                           .withValues(alpha: 0.6),
+                    ),
+                  if (hasCloudFile)
+                    _buildBadge(
+                      context,
+                      label: 'Cloud File',
+                      icon: Icons.cloud_outlined,
+                      bgColor: Colors.teal.withValues(alpha: 0.1),
+                      textColor: Colors.teal,
                     ),
                 ],
               ),

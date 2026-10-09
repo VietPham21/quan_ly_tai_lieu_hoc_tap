@@ -2,13 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants/app_colors.dart';
-import '../../data/database/app_database.dart';
+import '../../data/models/cloud_document.dart';
+import '../../logic/controllers/auth_controller.dart';
 import '../../logic/controllers/document_controller.dart';
 import '../widgets/category_chip_selector.dart';
 import '../widgets/confirmation_dialog.dart';
 import '../widgets/document_card.dart';
 import '../widgets/document_search_bar.dart';
 import '../widgets/empty_state_view.dart';
+import 'auth_screen.dart';
 import 'document_detail_screen.dart';
 import 'document_form_screen.dart';
 
@@ -17,10 +19,18 @@ class DocumentListScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final authController = context.watch<AuthController>();
+
+    // Nếu chưa đăng nhập: Hiển thị AuthScreen
+    if (!authController.isAuthenticated) {
+      return const AuthScreen();
+    }
+
     final controller = context.watch<DocumentController>();
     final state = controller.state;
     final docs = state.documents;
     final favCount = docs.where((d) => d.isFavorite).length;
+    final user = authController.user;
 
     return Scaffold(
       appBar: AppBar(
@@ -39,16 +49,16 @@ class DocumentListScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            const Column(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Tài Liệu Học Tập',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  'Kiến trúc phân tầng Cashew • Drift SQLite',
-                  style: TextStyle(
+                  user?.email ?? 'Cloud Firestore • Storage',
+                  style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w400,
                     color: AppColors.secondary,
@@ -68,6 +78,85 @@ class DocumentListScreen extends StatelessWidget {
               ),
               onPressed: controller.clearFilters,
             ),
+
+          // Menu tài khoản người dùng & Đăng xuất
+          PopupMenuButton<String>(
+            tooltip: 'Tài khoản người dùng',
+            icon: CircleAvatar(
+              radius: 16,
+              backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+              backgroundImage: user?.photoURL != null
+                  ? NetworkImage(user!.photoURL!)
+                  : null,
+              child: user?.photoURL == null
+                  ? const Icon(
+                      Icons.person_rounded,
+                      size: 20,
+                      color: AppColors.primary,
+                    )
+                  : null,
+            ),
+            onSelected: (val) async {
+              if (val == 'logout') {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Đăng xuất'),
+                    content: const Text(
+                      'Bạn có chắc chắn muốn đăng xuất khỏi tài khoản Google?',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        child: const Text('Hủy'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        child: const Text('Đăng xuất'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await authController.signOut();
+                }
+              }
+            },
+            itemBuilder: (ctx) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user?.displayName ?? 'Sinh viên',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      user?.email ?? '',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const Divider(),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.logout_rounded,
+                      color: AppColors.error,
+                      size: 20,
+                    ),
+                    SizedBox(width: 8),
+                    Text('Đăng xuất', style: TextStyle(color: AppColors.error)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Column(
@@ -128,7 +217,7 @@ class DocumentListScreen extends StatelessWidget {
 
           const SizedBox(height: 4),
 
-          // 4. Danh sách tài liệu phản ứng (Reactive Stream)
+          // 4. Danh sách tài liệu phản ứng (Reactive Stream từ Firestore)
           Expanded(child: _buildBody(context, controller)),
         ],
       ),
@@ -175,9 +264,9 @@ class DocumentListScreen extends StatelessWidget {
         );
       } else {
         return EmptyStateView(
-          icon: Icons.library_books_rounded,
+          icon: Icons.cloud_queue_rounded,
           title: 'Chưa có tài liệu học tập nào',
-          message: 'Bắt đầu quản lý tài liệu học tập của bạn bằng cách bấm nút "Thêm tài liệu" bên dưới.',
+          message: 'Bắt đầu lưu trữ tài liệu lên Cloud bằng cách bấm nút "Thêm tài liệu" bên dưới.',
           buttonText: 'Thêm tài liệu ngay',
           onButtonPressed: () {
             Navigator.of(context).push(
@@ -223,17 +312,20 @@ class DocumentListScreen extends StatelessWidget {
   Future<void> _handleDelete(
     BuildContext context,
     DocumentController controller,
-    Document doc,
+    CloudDocument doc,
   ) async {
     final confirmed = await ConfirmationDialog.show(
       context: context,
       title: 'Xác nhận xóa tài liệu',
       message:
-          'Bạn có chắc chắn muốn xóa "${doc.title}"? Dữ liệu sẽ bị xóa khỏi SQLite cục bộ.',
+          'Bạn có chắc chắn muốn xóa "${doc.title}"? Dữ liệu và file đính kèm trên Cloud sẽ bị xóa hoàn toàn.',
     );
 
     if (confirmed == true && context.mounted) {
-      final success = await controller.deleteDocument(doc.id);
+      final success = await controller.deleteDocument(
+        doc.id,
+        storagePath: doc.storagePath,
+      );
       if (success && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
