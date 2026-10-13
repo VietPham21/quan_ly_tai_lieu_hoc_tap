@@ -6,6 +6,7 @@ import '../../data/models/cloud_document.dart';
 
 class DocumentCard extends StatelessWidget {
   final CloudDocument document;
+  final bool isShared;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
@@ -14,6 +15,7 @@ class DocumentCard extends StatelessWidget {
   const DocumentCard({
     super.key,
     required this.document,
+    this.isShared = false,
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
@@ -176,6 +178,14 @@ class DocumentCard extends StatelessWidget {
                       bgColor: Colors.teal.withValues(alpha: 0.1),
                       textColor: Colors.teal,
                     ),
+                  if (isShared)
+                    _buildBadge(
+                      context,
+                      label: 'Được chia sẻ',
+                      icon: Icons.people_outline_rounded,
+                      bgColor: Colors.purple.withValues(alpha: 0.12),
+                      textColor: Colors.purple,
+                    ),
                 ],
               ),
 
@@ -215,16 +225,17 @@ class DocumentCard extends StatelessWidget {
                         color: AppColors.primary,
                         onPressed: onEdit,
                       ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(
-                          Icons.delete_outline_rounded,
-                          size: 20,
+                      if (!isShared)
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            size: 20,
+                          ),
+                          tooltip: 'Xóa tài liệu',
+                          color: AppColors.error,
+                          onPressed: onDelete,
                         ),
-                        tooltip: 'Xóa tài liệu',
-                        color: AppColors.error,
-                        onPressed: onDelete,
-                      ),
                     ],
                   ),
                 ],

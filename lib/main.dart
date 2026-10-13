@@ -2,14 +2,17 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/constants/app_constants.dart';
+import 'core/constants/supabase_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'data/database/app_database.dart';
 import 'data/database/daos/documents_dao.dart';
 import 'data/repositories/document_repository.dart';
 import 'data/repositories/document_repository_impl.dart';
 import 'data/repositories/firestore_document_repository.dart';
+import 'data/repositories/supabase_document_repository.dart';
 import 'firebase_options.dart';
 import 'logic/controllers/auth_controller.dart';
 import 'logic/controllers/document_controller.dart';
@@ -20,7 +23,7 @@ import 'presentation/screens/document_list_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Khởi tạo Firebase Đám mây (Authentication, Firestore, Storage)
+  // 1. Khởi tạo Firebase Đám mây (Authentication, Storage)
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
@@ -29,13 +32,33 @@ void main() async {
     debugPrint('Firebase.initializeApp warning: $e');
   }
 
-  // 2. Khởi tạo các Dịch vụ Cloud
+  // 2. Khởi tạo Supabase Client (CSDL Quan hệ PostgreSQL & Permissions)
+  if (SupabaseConstants.isConfigured) {
+    try {
+      await Supabase.initialize(
+        url: SupabaseConstants.url,
+        // ignore: deprecated_member_use
+        anonKey: SupabaseConstants.anonKey,
+      );
+      debugPrint('Supabase.initialize thành công!');
+    } catch (e) {
+      debugPrint('Supabase.initialize warning: $e');
+    }
+  } else {
+    debugPrint(
+      'SupabaseConstants chưa được cấu hình Project URL và anonKey. '
+      'Vui lòng cấu hình tại lib/core/constants/supabase_constants.dart',
+    );
+  }
+
+  // 3. Khởi tạo các Dịch vụ Cloud
   final authService = AuthService();
   final authController = AuthController(authService: authService);
+  final supabaseRepository = SupabaseDocumentRepository();
   final firestoreRepository = FirestoreDocumentRepository();
   final storageService = CloudStorageService();
 
-  // 3. Khởi tạo tầng Data Access & Persistence cục bộ (Drift SQLite - Offline/Fallback)
+  // 4. Khởi tạo tầng Data Access & Persistence cục bộ (Drift SQLite - Offline/Fallback)
   final database = AppDatabase();
   final documentsDao = DocumentsDao(database);
   final documentRepository = DocumentRepositoryImpl(documentsDao);
@@ -43,16 +66,26 @@ void main() async {
   // Nạp seed data nếu CSDL cục bộ rỗng (phục vụ fallback)
   await _seedSampleDataIfEmpty(documentRepository);
 
-  // 4. Khởi tạo DocumentController điều phối Cloud & Local
+  // 5. Khởi tạo DocumentController điều phối Cloud & Local
   final documentController = DocumentController(
+    supabaseRepository: supabaseRepository,
     firestoreRepository: firestoreRepository,
     storageService: storageService,
     repository: documentRepository,
     currentUid: authController.currentUid,
   );
 
-  // Lắng nghe thay đổi tài khoản Google để cập nhật luồng tài liệu
+  // Lắng nghe thay đổi tài khoản Google để cập nhật luồng tài liệu & đồng bộ hồ sơ sang Supabase
   authController.addListener(() {
+    final user = authController.user;
+    if (user != null && user.email != null) {
+      supabaseRepository.syncUserProfile(
+        uid: user.uid,
+        email: user.email!,
+        displayName: user.displayName,
+        photoUrl: user.photoURL,
+      );
+    }
     documentController.updateUser(authController.currentUid);
   });
 
@@ -61,6 +94,7 @@ void main() async {
       documentRepository: documentRepository,
       authService: authService,
       authController: authController,
+      supabaseRepository: supabaseRepository,
       firestoreRepository: firestoreRepository,
       storageService: storageService,
       documentController: documentController,
@@ -125,6 +159,7 @@ class MyApp extends StatelessWidget {
   final DocumentRepository? documentRepository;
   final AuthService? authService;
   final AuthController? authController;
+  final SupabaseDocumentRepository? supabaseRepository;
   final FirestoreDocumentRepository? firestoreRepository;
   final CloudStorageService? storageService;
   final DocumentController? documentController;
@@ -134,6 +169,7 @@ class MyApp extends StatelessWidget {
     this.documentRepository,
     this.authService,
     this.authController,
+    this.supabaseRepository,
     this.firestoreRepository,
     this.storageService,
     this.documentController,
@@ -152,6 +188,7 @@ class MyApp extends StatelessWidget {
     final safeDocController =
         documentController ??
         DocumentController(
+          supabaseRepository: supabaseRepository,
           firestoreRepository: firestoreRepository,
           storageService: storageService,
           repository: documentRepository,
@@ -163,6 +200,10 @@ class MyApp extends StatelessWidget {
         if (safeAuthService != null)
           Provider<AuthService>.value(value: safeAuthService),
         ChangeNotifierProvider<AuthController>.value(value: safeAuthController),
+        if (supabaseRepository != null)
+          Provider<SupabaseDocumentRepository>.value(
+            value: supabaseRepository!,
+          ),
         if (firestoreRepository != null)
           Provider<FirestoreDocumentRepository>.value(
             value: firestoreRepository!,

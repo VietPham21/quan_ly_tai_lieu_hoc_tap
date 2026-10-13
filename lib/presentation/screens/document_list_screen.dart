@@ -277,6 +277,7 @@ class DocumentListScreen extends StatelessWidget {
       }
     }
 
+    final currentUid = context.watch<AuthController>().currentUid ?? '';
     final docs = state.documents;
 
     return ListView.builder(
@@ -284,9 +285,11 @@ class DocumentListScreen extends StatelessWidget {
       itemCount: docs.length,
       itemBuilder: (context, index) {
         final doc = docs[index];
+        final isShared = doc.ownerUid.isNotEmpty && doc.ownerUid != currentUid;
         return DocumentCard(
           key: ValueKey(doc.id),
           document: doc,
+          isShared: isShared,
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(

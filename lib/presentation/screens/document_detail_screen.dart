@@ -4,8 +4,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_colors.dart';
 import '../../core/utils/file_helper.dart';
+import '../../logic/controllers/auth_controller.dart';
 import '../../logic/controllers/document_controller.dart';
 import '../widgets/confirmation_dialog.dart';
+import '../widgets/share_document_dialog.dart';
 import 'document_form_screen.dart';
 
 class DocumentDetailScreen extends StatelessWidget {
@@ -15,6 +17,7 @@ class DocumentDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final authController = context.watch<AuthController>();
     final controller = context.watch<DocumentController>();
     final docList = controller.documents;
     final docIndex = docList.indexWhere((d) => d.id == documentId);
@@ -34,68 +37,145 @@ class DocumentDetailScreen extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final hasCloudUrl = doc.fileUrl != null && doc.fileUrl!.isNotEmpty;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Chi tiết tài liệu',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-        ),
-        actions: [
-          IconButton(
-            tooltip: doc.isFavorite ? 'Bỏ yêu thích' : 'Yêu thích',
-            icon: Icon(
-              doc.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-              color: doc.isFavorite ? Colors.amber : null,
-              size: 26,
+    final currentUid = authController.currentUid ?? '';
+    final isOwner = doc.ownerUid.isEmpty || doc.ownerUid == currentUid;
+
+    return FutureBuilder<String>(
+      future: controller.getUserRoleForDocument(doc),
+      initialData: isOwner ? 'owner' : 'viewer',
+      builder: (context, snapshot) {
+        final role = snapshot.data ?? (isOwner ? 'owner' : 'viewer');
+        final canEdit = role == 'owner' || role == 'editor';
+        final canDelete = role == 'owner';
+        final canShare = role == 'owner';
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              'Chi tiết tài liệu',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
-            onPressed: () => controller.toggleFavorite(doc.id, doc.isFavorite),
-          ),
-          IconButton(
-            tooltip: 'Chỉnh sửa tài liệu',
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => DocumentFormScreen(document: doc),
+            actions: [
+              // Nút Yêu thích
+              IconButton(
+                tooltip: doc.isFavorite ? 'Bỏ yêu thích' : 'Yêu thích',
+                icon: Icon(
+                  doc.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                  color: doc.isFavorite ? Colors.amber : null,
+                  size: 26,
                 ),
-              );
-            },
+                onPressed: () => controller.toggleFavorite(doc.id, doc.isFavorite),
+              ),
+
+              // Nút Chia sẻ (chỉ chủ sở hữu mới có quyền phân quyền chia sẻ)
+              if (canShare)
+                IconButton(
+                  tooltip: 'Chia sẻ tài liệu',
+                  icon: const Icon(Icons.share_rounded, color: AppColors.primary),
+                  onPressed: () => ShareDocumentDialog.show(context, doc),
+                ),
+
+              // Nút Chỉnh sửa (chủ sở hữu hoặc người được cấp quyền Editor)
+              if (canEdit)
+                IconButton(
+                  tooltip: 'Chỉnh sửa tài liệu',
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => DocumentFormScreen(document: doc),
+                      ),
+                    );
+                  },
+                ),
+
+              // Nút Xóa (chỉ chủ sở hữu mới có quyền xóa)
+              if (canDelete)
+                IconButton(
+                  tooltip: 'Xóa tài liệu',
+                  icon: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: AppColors.error,
+                  ),
+                  onPressed: () async {
+                    final confirmed = await ConfirmationDialog.show(
+                      context: context,
+                      title: 'Xóa tài liệu',
+                      message:
+                          'Bạn có chắc chắn muốn xóa "${doc.title}"? Dữ liệu và file đính kèm trên Cloud sẽ bị xóa hoàn toàn.',
+                    );
+                    if (confirmed == true && context.mounted) {
+                      final success = await controller.deleteDocument(
+                        doc.id,
+                        storagePath: doc.storagePath,
+                      );
+                      if (success && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Đã xóa tài liệu thành công!'),
+                            backgroundColor: AppColors.success,
+                          ),
+                        );
+                        Navigator.of(context).pop();
+                      }
+                    }
+                  },
+                ),
+            ],
           ),
-          IconButton(
-            tooltip: 'Xóa tài liệu',
-            icon: const Icon(
-              Icons.delete_outline_rounded,
-              color: AppColors.error,
-            ),
-            onPressed: () async {
-              final confirmed = await ConfirmationDialog.show(
-                context: context,
-                title: 'Xóa tài liệu',
-                message:
-                    'Bạn có chắc chắn muốn xóa "${doc.title}"? Dữ liệu và file đính kèm trên Cloud sẽ bị xóa hoàn toàn.',
-              );
-              if (confirmed == true && context.mounted) {
-                final success = await controller.deleteDocument(
-                  doc.id,
-                  storagePath: doc.storagePath,
-                );
-                if (success && context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Đã xóa tài liệu thành công!'),
-                      backgroundColor: AppColors.success,
+          body: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              // Banner thông báo nếu đây là tài liệu được chia sẻ
+              if (!isOwner)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: (role == 'editor' ? Colors.orange : Colors.blue).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: (role == 'editor' ? Colors.orange : Colors.blue).withValues(alpha: 0.3),
                     ),
-                  );
-                  Navigator.of(context).pop();
-                }
-              }
-            },
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        role == 'editor' ? Icons.edit_note_rounded : Icons.visibility_rounded,
+                        color: role == 'editor' ? Colors.orange : Colors.blue,
+                        size: 26,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              role == 'editor'
+                                  ? 'Tài liệu được chia sẻ (Quyền Chỉnh sửa)'
+                                  : 'Tài liệu được chia sẻ (Quyền Chỉ xem)',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: role == 'editor' ? Colors.orange : Colors.blue,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              role == 'editor'
+                                  ? 'Bạn có quyền xem file và chỉnh sửa thông tin tài liệu này.'
+                                  : 'Bạn chỉ có quyền xem và tải file, không thể sửa hoặc xóa.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
           // Header Card: Icon lớn, Tiêu đề, Môn học & Danh mục
           Container(
             padding: const EdgeInsets.all(20),
@@ -332,6 +412,8 @@ class DocumentDetailScreen extends StatelessWidget {
         ],
       ),
     );
+  },
+);
   }
 
   Widget _buildMetaItem(

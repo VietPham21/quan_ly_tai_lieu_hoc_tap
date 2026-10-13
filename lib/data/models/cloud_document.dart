@@ -68,6 +68,48 @@ class CloudDocument {
     return CloudDocument.fromFirestoreMap(snapshot.data() ?? {}, snapshot.id);
   }
 
+  /// Chuyển đổi từ Supabase Map (PostgreSQL row) sang CloudDocument
+  factory CloudDocument.fromSupabase(Map<String, dynamic> data) {
+    return CloudDocument(
+      id: data['id']?.toString() ?? '',
+      title: data['title'] as String? ?? '',
+      description: data['description'] as String?,
+      subject: data['subject'] as String? ?? '',
+      category: data['category'] as String? ?? '',
+      fileName: (data['file_name'] ?? data['fileName']) as String? ?? '',
+      filePath: (data['file_path'] ?? data['filePath']) as String?,
+      fileType: ((data['file_type'] ?? data['fileType']) as String? ?? 'OTHER').toUpperCase(),
+      fileSize: ((data['file_size'] ?? data['fileSize']) as num?)?.toInt() ?? 0,
+      storagePath: (data['storage_path'] ?? data['storagePath']) as String?,
+      fileUrl: (data['file_url'] ?? data['fileUrl']) as String?,
+      ownerUid: (data['owner_id'] ?? data['ownerUid']) as String? ?? '',
+      isFavorite: (data['is_favorite'] ?? data['isFavorite']) as bool? ?? false,
+      createdAt: _parseDateTime(data['created_at'] ?? data['createdAt']),
+      updatedAt: _parseDateTime(data['updated_at'] ?? data['updatedAt']),
+    );
+  }
+
+  /// Chuyển đổi sang Map để lưu trữ trên Supabase (bảng documents)
+  Map<String, dynamic> toSupabase() {
+    return {
+      'id': id,
+      'title': title,
+      'description': description,
+      'subject': subject,
+      'category': category,
+      'file_name': fileName,
+      'file_path': filePath,
+      'file_type': fileType.toUpperCase(),
+      'file_size': fileSize,
+      'storage_path': storagePath,
+      'file_url': fileUrl,
+      'owner_id': ownerUid,
+      'is_favorite': isFavorite,
+      'created_at': createdAt.toIso8601String(),
+      'updated_at': updatedAt.toIso8601String(),
+    };
+  }
+
   /// Chuyển đổi từ Drift Document sang CloudDocument
   factory CloudDocument.fromDrift(Document doc) {
     return CloudDocument(

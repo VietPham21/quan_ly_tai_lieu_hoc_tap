@@ -215,6 +215,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         fileSize: fileSizeBytes,
         isFavorite: _isFavorite,
         createdAt: widget.document!.createdAt,
+        ownerUid: widget.document!.ownerUid,
         oldStoragePath: widget.document!.storagePath,
         existingFileUrl: widget.document!.fileUrl,
         newFileBytes: _selectedFileBytes,

@@ -6,14 +6,17 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../data/models/cloud_document.dart';
+import '../../data/models/document_permission.dart';
 import '../../data/repositories/document_repository.dart';
 import '../../data/repositories/firestore_document_repository.dart';
+import '../../data/repositories/supabase_document_repository.dart';
 import '../services/cloud_storage_service.dart';
 import '../states/document_state.dart';
 
 /// Business Logic & State Controller cho Quản lý Tài liệu Học tập.
-/// Tích hợp cả Cloud Firestore + Cloud Storage và hỗ trợ Local Repository (Drift SQLite).
+/// Tích hợp Supabase (CSDL & Permissions) + Firebase Storage (Tệp tin vật lý) + Offline Local.
 class DocumentController extends ChangeNotifier {
+  final SupabaseDocumentRepository? _supabaseRepository;
   final FirestoreDocumentRepository? _firestoreRepository;
   final CloudStorageService? _storageService;
   final DocumentRepository? _localRepository;
@@ -24,12 +27,14 @@ class DocumentController extends ChangeNotifier {
   StreamSubscription<List<dynamic>>? _subscription;
 
   DocumentController({
+    SupabaseDocumentRepository? supabaseRepository,
     FirestoreDocumentRepository? firestoreRepository,
     CloudStorageService? storageService,
     DocumentRepository? repository,
     String? currentUid,
     Uuid? uuid,
-  }) : _firestoreRepository = firestoreRepository,
+  }) : _supabaseRepository = supabaseRepository,
+       _firestoreRepository = firestoreRepository,
        _storageService = storageService,
        _localRepository = repository,
        _currentUid = currentUid,
@@ -57,10 +62,41 @@ class DocumentController extends ChangeNotifier {
     _subscription?.cancel();
 
     final uid = _currentUid;
+    final supabaseRepo = _supabaseRepository;
     final firestoreRepo = _firestoreRepository;
     final localRepo = _localRepository;
 
-    // 1. Chế độ Cloud: Khi đã đăng nhập và có Firestore Repository
+    // 1. Chế độ Supabase Cloud: Khi đã cấu hình Supabase và đăng nhập
+    if (uid != null && uid.isNotEmpty && supabaseRepo != null && supabaseRepo.isAvailable) {
+      _subscription = supabaseRepo
+          .watchUserDocuments(
+            uid: uid,
+            query: _state.searchQuery,
+            category: _state.selectedCategory,
+            subject: _state.selectedSubject,
+            ascending: _state.isAscending,
+          )
+          .listen(
+            (docs) {
+              _state = _state.copyWith(
+                status: DocumentStatus.success,
+                documents: docs,
+                clearError: true,
+              );
+              notifyListeners();
+            },
+            onError: (e) {
+              _state = _state.copyWith(
+                status: DocumentStatus.error,
+                errorMessage: 'Lỗi đồng bộ dữ liệu Supabase: $e',
+              );
+              notifyListeners();
+            },
+          );
+      return;
+    }
+
+    // 2. Chế độ Firebase Firestore Cloud
     if (uid != null && uid.isNotEmpty && firestoreRepo != null) {
       _subscription = firestoreRepo
           .watchUserDocuments(
@@ -268,15 +304,19 @@ class DocumentController extends ChangeNotifier {
     notifyListeners();
 
     final uid = _currentUid;
+    final supabaseRepo = _supabaseRepository;
     final firestoreRepo = _firestoreRepository;
     final storageSvc = _storageService;
     final localRepo = _localRepository;
 
     // 1. Thao tác trên Cloud (khi đã đăng nhập)
-    if (uid != null && uid.isNotEmpty && firestoreRepo != null) {
+    if (uid != null && uid.isNotEmpty && ((supabaseRepo != null && supabaseRepo.isAvailable) || firestoreRepo != null)) {
       try {
-        // Bước 1: Upload file lên Cloud Storage nếu người dùng đã chọn file
+        // Bước 1: Upload file lên Firebase Storage nếu người dùng đã chọn file
         if (fileBytes != null && storageSvc != null) {
+          _state = _state.copyWith(uploadProgress: 0.3);
+          notifyListeners();
+
           final uploadResult = await storageSvc.uploadDocumentFile(
             uid: uid,
             documentId: docId,
@@ -289,9 +329,12 @@ class DocumentController extends ChangeNotifier {
           );
           storagePath = uploadResult.storagePath;
           fileUrl = uploadResult.downloadUrl;
+
+          _state = _state.copyWith(uploadProgress: 1.0);
+          notifyListeners();
         }
 
-        // Bước 2: Ghi Metadata vào Cloud Firestore
+        // Bước 2: Tạo đối tượng CloudDocument
         final newDoc = CloudDocument(
           id: docId,
           title: title.trim(),
@@ -310,10 +353,15 @@ class DocumentController extends ChangeNotifier {
           updatedAt: now,
         );
 
+        // Bước 3: Ghi Metadata vào Supabase (hoặc Firestore fallback)
         try {
-          await firestoreRepo.addDocument(newDoc);
-        } catch (firestoreError) {
-          // CƠ CHẾ BÙ TRỪ: Nếu ghi Firestore thất bại, tự động dọn dẹp file Storage vừa tải lên
+          if (supabaseRepo != null && supabaseRepo.isAvailable) {
+            await supabaseRepo.addDocument(newDoc);
+          } else if (firestoreRepo != null) {
+            await firestoreRepo.addDocument(newDoc);
+          }
+        } catch (dbError) {
+          // CƠ CHẾ BÙ TRỪ: Nếu ghi CSDL thất bại, tự động dọn dẹp file Storage vừa tải lên
           if (storagePath != null && storageSvc != null) {
             await storageSvc.deleteDocumentFile(storagePath);
           }
@@ -380,6 +428,7 @@ class DocumentController extends ChangeNotifier {
     int fileSize = 0,
     bool isFavorite = false,
     required DateTime createdAt,
+    String? ownerUid,
     String? oldStoragePath,
     String? existingFileUrl,
     Uint8List? newFileBytes,
@@ -410,14 +459,15 @@ class DocumentController extends ChangeNotifier {
     final now = DateTime.now();
 
     final uid = _currentUid;
+    final supabaseRepo = _supabaseRepository;
     final firestoreRepo = _firestoreRepository;
     final storageSvc = _storageService;
     final localRepo = _localRepository;
 
     // 1. Thao tác Cloud
-    if (uid != null && uid.isNotEmpty && firestoreRepo != null) {
+    if (uid != null && uid.isNotEmpty && ((supabaseRepo != null && supabaseRepo.isAvailable) || firestoreRepo != null)) {
       try {
-        // Nếu người dùng chọn file mới: Upload file mới trước
+        // Nếu người dùng chọn file mới: Upload file mới trước lên Firebase Storage
         if (newFileBytes != null && storageSvc != null) {
           _state = _state.copyWith(uploadProgress: 0.0);
           notifyListeners();
@@ -450,15 +500,19 @@ class DocumentController extends ChangeNotifier {
               : fileSize,
           storagePath: storagePath,
           fileUrl: fileUrl,
-          ownerUid: uid,
+          ownerUid: (ownerUid != null && ownerUid.isNotEmpty) ? ownerUid : uid,
           isFavorite: isFavorite,
           createdAt: createdAt,
           updatedAt: now,
         );
 
-        await firestoreRepo.updateDocument(updatedDoc);
+        if (supabaseRepo != null && supabaseRepo.isAvailable) {
+          await supabaseRepo.updateDocument(updatedDoc);
+        } else if (firestoreRepo != null) {
+          await firestoreRepo.updateDocument(updatedDoc);
+        }
 
-        // Sau khi cập nhật Firestore thành công, xóa file cũ trên Storage nếu đã upload file mới
+        // Sau khi cập nhật CSDL thành công, xóa file cũ trên Storage nếu đã upload file mới
         if (newFileBytes != null &&
             oldStoragePath != null &&
             oldStoragePath != storagePath &&
@@ -517,17 +571,18 @@ class DocumentController extends ChangeNotifier {
     return false;
   }
 
-  /// Xóa tài liệu (Xóa cả file Storage và metadata Firestore)
+  /// Xóa tài liệu (Xóa cả file Storage và metadata Supabase/Firestore)
   Future<bool> deleteDocument(String id, {String? storagePath}) async {
     final uid = _currentUid;
+    final supabaseRepo = _supabaseRepository;
     final firestoreRepo = _firestoreRepository;
     final storageSvc = _storageService;
     final localRepo = _localRepository;
 
     // 1. Thao tác Cloud
-    if (uid != null && uid.isNotEmpty && firestoreRepo != null) {
+    if (uid != null && uid.isNotEmpty && ((supabaseRepo != null && supabaseRepo.isAvailable) || firestoreRepo != null)) {
       try {
-        // Xóa file trên Cloud Storage nếu có
+        // Xóa file trên Firebase Storage nếu có
         if (storagePath != null &&
             storagePath.isNotEmpty &&
             storageSvc != null) {
@@ -540,8 +595,12 @@ class DocumentController extends ChangeNotifier {
           }
         }
 
-        // Xóa metadata trong Cloud Firestore
-        await firestoreRepo.deleteDocument(uid: uid, docId: id);
+        // Xóa metadata trong Supabase hoặc Firestore
+        if (supabaseRepo != null && supabaseRepo.isAvailable) {
+          await supabaseRepo.deleteDocument(docId: id);
+        } else if (firestoreRepo != null) {
+          await firestoreRepo.deleteDocument(uid: uid, docId: id);
+        }
         _setSuccessMessage('Đã xóa tài liệu thành công!');
         return true;
       } catch (e) {
@@ -574,16 +633,24 @@ class DocumentController extends ChangeNotifier {
   /// Đổi trạng thái yêu thích
   Future<void> toggleFavorite(String id, bool currentStatus) async {
     final uid = _currentUid;
+    final supabaseRepo = _supabaseRepository;
     final firestoreRepo = _firestoreRepository;
     final localRepo = _localRepository;
 
-    if (uid != null && uid.isNotEmpty && firestoreRepo != null) {
+    if (uid != null && uid.isNotEmpty && ((supabaseRepo != null && supabaseRepo.isAvailable) || firestoreRepo != null)) {
       try {
-        await firestoreRepo.toggleFavorite(
-          uid: uid,
-          docId: id,
-          currentStatus: currentStatus,
-        );
+        if (supabaseRepo != null && supabaseRepo.isAvailable) {
+          await supabaseRepo.toggleFavorite(
+            docId: id,
+            currentStatus: currentStatus,
+          );
+        } else if (firestoreRepo != null) {
+          await firestoreRepo.toggleFavorite(
+            uid: uid,
+            docId: id,
+            currentStatus: currentStatus,
+          );
+        }
       } catch (e) {
         _setErrorMessage('Lỗi khi cập nhật yêu thích: $e');
       }
@@ -597,6 +664,90 @@ class DocumentController extends ChangeNotifier {
         _setErrorMessage('Lỗi khi cập nhật yêu thích: $e');
       }
     }
+  }
+
+  // ==========================================
+  // QUẢN LÝ PHÂN QUYỀN & CHIA SẺ (SUPABASE PERMISSIONS)
+  // ==========================================
+
+  /// Cấp quyền chia sẻ tài liệu cho người dùng khác qua Email
+  Future<bool> shareDocument({
+    required String documentId,
+    required String targetEmail,
+    required String role, // 'viewer' hoặc 'editor'
+  }) async {
+    final supabaseRepo = _supabaseRepository;
+    if (supabaseRepo == null || !supabaseRepo.isAvailable) {
+      _setErrorMessage('Tính năng chia sẻ tài liệu yêu cầu kết nối Supabase.');
+      return false;
+    }
+
+    try {
+      await supabaseRepo.shareDocument(
+        documentId: documentId,
+        targetEmail: targetEmail,
+        role: role,
+      );
+      _setSuccessMessage('Đã chia sẻ tài liệu thành công cho $targetEmail ($role)!');
+      return true;
+    } catch (e) {
+      _setErrorMessage('Lỗi khi chia sẻ tài liệu: $e');
+      return false;
+    }
+  }
+
+  /// Lấy danh sách các quyền chia sẻ của một tài liệu
+  Future<List<DocumentPermission>> getDocumentPermissions(
+    String documentId,
+  ) async {
+    final supabaseRepo = _supabaseRepository;
+    if (supabaseRepo == null || !supabaseRepo.isAvailable) {
+      return [];
+    }
+    return await supabaseRepo.getDocumentPermissions(documentId);
+  }
+
+  /// Thu hồi quyền chia sẻ tài liệu
+  Future<bool> revokePermission(String permissionId) async {
+    final supabaseRepo = _supabaseRepository;
+    if (supabaseRepo == null || !supabaseRepo.isAvailable) {
+      return false;
+    }
+
+    try {
+      await supabaseRepo.revokePermission(permissionId);
+      _setSuccessMessage('Đã thu hồi quyền chia sẻ.');
+      return true;
+    } catch (e) {
+      _setErrorMessage('Lỗi khi thu hồi quyền: $e');
+      return false;
+    }
+  }
+
+  /// Lấy danh sách người dùng trong hệ thống để chọn email chia sẻ
+  Future<List<Map<String, dynamic>>> getAllRegisteredUsers() async {
+    final supabaseRepo = _supabaseRepository;
+    if (supabaseRepo == null || !supabaseRepo.isAvailable) {
+      return [];
+    }
+    return await supabaseRepo.getAllUsers(excludeUid: _currentUid);
+  }
+
+  /// Lấy vai trò của user hiện tại đối với tài liệu ('owner', 'editor', 'viewer')
+  Future<String> getUserRoleForDocument(CloudDocument doc) async {
+    final uid = _currentUid;
+    if (uid == null || uid.isEmpty) return 'viewer';
+    if (doc.ownerUid == uid) return 'owner';
+
+    final supabaseRepo = _supabaseRepository;
+    if (supabaseRepo != null && supabaseRepo.isAvailable) {
+      return await supabaseRepo.getUserRoleForDocument(
+        documentId: doc.id,
+        uid: uid,
+        ownerUid: doc.ownerUid,
+      );
+    }
+    return 'viewer';
   }
 
   void _setErrorMessage(String message) {
